@@ -1,5 +1,14 @@
 # cache
 
+This is Fork of [actions/cache](https://github.com/marketplace/actions/cache) which always saves cache.
+
+upstream actions/cache is not save cache if job failed.
+Thus this repo provides a action that always save cache.
+
+Version `v2` and `v2.1.7` or later are supported.
+
+---
+
 This action allows caching dependencies and build outputs to improve workflow execution time.
 
 [![Tests](https://github.com/actions/cache/actions/workflows/workflow.yml/badge.svg)](https://github.com/actions/cache/actions/workflows/workflow.yml)

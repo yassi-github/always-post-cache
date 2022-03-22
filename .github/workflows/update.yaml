@@ -1,0 +1,139 @@
+# Check update from upstream main branch.
+# If main behind upstream, fetch and push upstream commit.
+# And if version update detected, release it.
+# However, publishing needs manual operation so could be late.
+name: Update
+
+on:
+  schedule:
+    - cron: '37 3 * * *'
+
+env:
+  UPSTREAM_URL: "https://github.com/actions/cache.git"
+  LATEST_RELEASE: "https://github.com/yassi-github/always-post-cache/releases/latest"
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT }}
+
+      - name: check upstream update
+        id: check-update
+        run: |
+          git config --local user.name "${GITHUB_ACTOR}"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "${{ env.UPSTREAM_URL }}"
+          git fetch --quiet upstream main
+          VERSION_TAG="$(echo "$( git diff main upstream/main -U0 -- 'package.json' | grep -e '^+ \+"version": "[0-9]\.[0-9]\.[0-9]",' | awk '{print $3}' | tr -d '"' | head -c5 )" )"
+          echo "::set-output name=VERSION_TAG::v${VERSION_TAG}"
+          echo "::set-output name=MAJOR_VERSION_TAG::v$(echo ${VERSION_TAG} | head -c1)"
+          if [ -n "$(git diff main upstream/main --name-only -- ':!README.md' ':!action.yml' ':!.github/workflows/update.yaml')" ]; then
+            echo "Update to follow the upstream repository."
+            git rebase -X ours upstream/main main
+            git remote set-url origin "https://${{ secrets.PAT }}@github.com/${GITHUB_REPOSITORY}.git"
+            if [ -n "${VERSION_TAG}" ]; then
+              echo "Version update detected."
+              echo "::set-output name=UPDATE_STAT::ok"
+            else
+              echo "Updating branch but version update not detected."
+              git push --force-with-lease origin ${GITHUB_REF#refs/heads/}
+              # early exit
+              echo "::set-output name=UPDATE_STAT::fail"
+              exit 0
+            fi
+          else
+            echo "No update found."
+            # early exit
+            echo "::set-output name=UPDATE_STAT::fail"
+            exit 0
+          fi
+
+      - name: Set Node.js 16.x
+        if: (steps.check-update.outputs.UPDATE_STAT == 'ok')
+        uses: actions/setup-node@v1
+        with:
+          node-version: 16.x
+
+      - name: Install dependencies
+        if: (steps.check-update.outputs.UPDATE_STAT == 'ok')
+        run: npm ci
+
+      - name: Rebuild the dist/ directory
+        if: (steps.check-update.outputs.UPDATE_STAT == 'ok')
+        run: npm run build
+
+      # Expect to have fetched the latest dist/ directory
+      - name: Compare the expected and actual dist/ directories
+        id: check-unexpected
+        if: (steps.check-update.outputs.UPDATE_STAT == 'ok')
+        run: |
+          if [ "$(git diff --ignore-space-at-eol dist/ | wc -l)" -gt "0" ]; then
+            echo "Detected uncommitted changes after build. It looks like pre release commit. Retry release tommorrow."
+            # early exit
+            echo "::set-output name=DIST_STAT::unexpected"
+            exit 1
+          else
+            echo "dist/ stat is ok."
+            echo "::set-output name=DIST_STAT::ok"
+          fi
+      # Slack unexpected job notif
+      - name: Send unexpected notif to Slack
+        if: failure() && (steps.check-unexpected.outputs.DIST_STAT == 'unexpected')
+        id: slack-unexpected
+        uses: slackapi/slack-github-action@v1.18.0
+        with:
+          payload: |
+            {
+                    "text": "[WARN] always-post-cache latest commit dist/ is differ to built one.\nIf u got same notif as yesterday, check the repo.\n\nhttps://github.com/${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_INCOMING_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      # release
+      - name: release push
+        if: (steps.check-update.outputs.UPDATE_STAT == 'ok')
+        run: |
+         git tag -f ${{ steps.check-update.outputs.MAJOR_VERSION_TAG }} ${GITHUB_SHA}
+         git tag -f ${{ steps.check-update.outputs.VERSION_TAG }} ${{ steps.check-update.outputs.MAJOR_VERSION_TAG }}
+         git push --force-with-lease origin ${GITHUB_REF#refs/heads/}
+         git push -f origin ${{ steps.check-update.outputs.VERSION_TAG }} ${{ steps.check-update.outputs.MAJOR_VERSION_TAG }}
+         echo "waiting 10 sec for remote repository up-to-date, as insurance."
+         sleep 10s
+      - uses: actions/checkout@v3
+        if: (steps.check-update.outputs.UPDATE_STAT == 'ok')
+        with:
+          ref: ${{ steps.check-update.outputs.VERSION_TAG }}
+      - name: Release with tag
+        if: (steps.check-update.outputs.UPDATE_STAT == 'ok')
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.check-update.outputs.VERSION_TAG }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Release with major tag
+        if: (steps.check-update.outputs.UPDATE_STAT == 'ok')
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.check-update.outputs.MAJOR_VERSION_TAG }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Slack release notif
+      - name: Send release notif to Slack
+        if: (steps.check-update.outputs.UPDATE_STAT == 'ok')
+        id: slack-release
+        uses: slackapi/slack-github-action@v1.18.0
+        with:
+          payload: |
+            {
+              "text": "always-post-cache Released. Please publish to marketplace.\n\n${{ env.LATEST_RELEASE }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_INCOMING_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

@@ -1,5 +1,7 @@
 # Cache action
 
+**Deprecated: use `save-always` flag in actions/cache@v4 instead.**
+
 This is Fork of [actions/cache](https://github.com/marketplace/actions/cache) which always saves cache.
 
 upstream actions/cache is not save cache if job failed.
